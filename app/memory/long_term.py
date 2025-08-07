@@ -1,19 +1,20 @@
 # app/memory/long_term.py
 
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import PointStruct, VectorParams, Distance, SearchRequest
-
-# from sentence_transformers import SentenceTransformer
-from app.memory.schema import LongTermMemoryEntry
-from uuid import uuid4
-from typing import List, Optional
-import logging
-from app.memory.embeddings.sentence_transformer_provider import (
-    SentenceTransformerProvider,
+from qdrant_client.http.models import (
+    PointStruct,
+    VectorParams,
+    Distance,
+    Filter,
+    FieldCondition,
+    MatchValue,
 )
-
-
-from app.config import settings  # <-- Import settings
+from sentence_transformers import SentenceTransformer
+from app.memory.schema import LongTermMemoryEntry
+from app.config import settings  # ✅ import config
+from uuid import uuid4
+from typing import List, Optional, Dict, Any
+import logging
 
 logger = logging.getLogger(__name__)
 
@@ -26,18 +27,10 @@ class LongTermMemory:
         collection_name: str = settings.LTM_COLLECTION_NAME,
         embedding_model: str = settings.LTM_EMBEDDING_MODEL,
         vector_size: int = settings.LTM_VECTOR_SIZE,
-        embedding_provider: str = "sentence_transformer",  # ADD this parameter
     ):
         self.collection_name = collection_name
         self.client = QdrantClient(host=host, port=port)
-
-        # REPLACE this line:
-        # self.model = SentenceTransformer(embedding_model)
-        self.embedding_provider = SentenceTransformerProvider(
-            model_name=embedding_model
-        )
-        vector_size = self.embedding_provider.dimension
-
+        self.model = SentenceTransformer(embedding_model)
         self._ensure_collection(vector_size)
 
     def _ensure_collection(self, vector_size: int):
@@ -49,19 +42,31 @@ class LongTermMemory:
             )
 
     def add_entry(
-        self, user_id: str, text: str, metadata: Optional[dict] = None
+        self,
+        user_id: str,
+        text: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        conversation_id: Optional[str] = None,
     ) -> Optional[str]:
-        # Deduplication: search for similar text
-        existing = self.search(query_text=text, top_k=3, user_id=user_id)
-        for e in existing:
-            if e.text.strip().lower() == text.strip().lower():
-                logger.info(f"Duplicate entry found. Skipping: {text}")
-                return None  # Don't re-save duplicate
+        #  deduplication with metadata consideration
+        search_filters = {"user_id": user_id}
+        if conversation_id:
+            search_filters["conversation_id"] = conversation_id
 
-        # Proceed with adding
-        embedding = self.embedding_provider.encode(text)
+        existing = self.search(query_text=text, top_k=3, filters=search_filters)
+
+        for e in existing:
+            # More sophisticated similarity check
+            if self._texts_similar(e.text, text, threshold=0.95):
+                logger.info(f"Similar entry found. Skipping: {text[:50]}...")
+                return None
+
+        # Add with conversation context
+        embedding = self.model.encode(text).tolist()
         entry_id = str(uuid4())
         metadata = metadata or {}
+        if conversation_id:
+            metadata["conversation_id"] = conversation_id
 
         point = PointStruct(
             id=entry_id,
@@ -73,20 +78,44 @@ class LongTermMemory:
         return entry_id
 
     def search(
-        self, query_text: str, top_k: int = 5, user_id: Optional[str] = None
+        self,
+        query_text: str,
+        top_k: int = 5,
+        filters: Optional[Dict[str, Any]] = None,
+        min_score: float = 0.3,
     ) -> List[LongTermMemoryEntry]:
-        query_vector = self.embedding_provider.encode(query_text)
+        query_vector = self.model.encode(query_text).tolist()
+
+        # Build Qdrant filter
+        qdrant_filter = None
+        if filters:
+            conditions = []
+            for key, value in filters.items():
+                if key == "user_id":
+                    conditions.append(
+                        FieldCondition(key=key, match=MatchValue(value=value))
+                    )
+                else:
+                    conditions.append(
+                        FieldCondition(
+                            key=f"metadata.{key}", match=MatchValue(value=value)
+                        )
+                    )
+
+            if conditions:
+                qdrant_filter = Filter(must=conditions)
 
         results = self.client.search(
-            collection_name=self.collection_name, query_vector=query_vector, limit=top_k
+            collection_name=self.collection_name,
+            query_vector=query_vector,
+            limit=top_k,
+            query_filter=qdrant_filter,
+            score_threshold=min_score,
         )
 
         memory_entries = []
         for result in results:
             payload = result.payload
-            if user_id and payload.get("user_id") != user_id:
-                continue
-
             memory_entries.append(
                 LongTermMemoryEntry(
                     id=str(result.id),
@@ -98,3 +127,34 @@ class LongTermMemory:
             )
 
         return memory_entries
+
+    def _texts_similar(self, text1: str, text2: str, threshold: float = 0.95) -> bool:
+        """Simple text similarity check"""
+        text1_clean = text1.strip().lower()
+        text2_clean = text2.strip().lower()
+
+        if text1_clean == text2_clean:
+            return True
+
+        # Simple Jaccard similarity for words
+        words1 = set(text1_clean.split())
+        words2 = set(text2_clean.split())
+
+        if not words1 or not words2:
+            return False
+
+        intersection = len(words1.intersection(words2))
+        union = len(words1.union(words2))
+
+        return intersection / union >= threshold
+
+    def summarize_old_memories(self, user_id: str, days_old: int = 30) -> Optional[str]:
+        """Basic memory summarization to prevent growth"""
+        # This is a placeholder for more sophisticated summarization
+        # Could use LLM to summarize old conversations
+        from datetime import datetime, timedelta
+
+        cutoff_date = datetime.now() - timedelta(days=days_old)
+        # Implementation would filter by date and summarize
+        # For now, just return None
+        return None
