@@ -9,16 +9,20 @@ LTM_QDRANT_PORT = 6333
 
 # Short Term Memory settings
 STM_TTL_MINUTES = 30
-
-# ADD new settings (optional - with defaults)
-USE_REDIS_STM = False  # Default to your current in-memory system
+# Redis settings
+USE_REDIS_STM = False  # Set to True to use Redis
 REDIS_HOST = "localhost"
 REDIS_PORT = 6379
 REDIS_DB = 0
 
-EMBEDDING_PROVIDER = "sentence_transformer"  # or "openai"
-OPENAI_API_KEY = None  # Only needed if using OpenAI embeddings
+# Embedding settings
+EMBEDDING_PROVIDER = "sentence_transformer"  # Only sentence_transformer for now
 
-# Plugin settings
-ENABLE_ENTITY_EXTRACTION = False
-ENABLE_SENTIMENT_ANALYSIS = False
+# Lifecycle settings
+MEMORY_CLEANUP_DAYS = 90
+IMPORTANCE_THRESHOLD_FOR_CLEANUP = 0.3
+SIMILARITY_THRESHOLD_FOR_CONSOLIDATION = 0.95
+
+# Search settings
+DEFAULT_SEARCH_TYPE = "hybrid"
+MAX_SEARCH_RESULTS = 100

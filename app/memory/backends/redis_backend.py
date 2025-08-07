@@ -1,4 +1,7 @@
 # app/memory/backends/redis_backend.py
+"""
+Redis backend for distributed short-term memory
+"""
 import redis
 import json
 from datetime import datetime, timedelta
@@ -8,10 +11,16 @@ from app.config import settings
 
 class RedisSTMBackend:
     def __init__(self, host: str = "localhost", port: int = 6379, db: int = 0):
-        self.redis_client = redis.Redis(
-            host=host, port=port, db=db, decode_responses=True
-        )
-        self.ttl_seconds = settings.STM_TTL_MINUTES * 60
+        try:
+            self.redis_client = redis.Redis(
+                host=host, port=port, db=db, decode_responses=True
+            )
+            # Test connection
+            self.redis_client.ping()
+            self.ttl_seconds = settings.STM_TTL_MINUTES * 60
+        except (redis.ConnectionError, redis.RedisError) as e:
+            print(f"Redis connection failed: {e}")
+            raise
 
     def set(self, session_id: str, key: str, value: str):
         redis_key = f"stm:{session_id}:{key}"
@@ -37,3 +46,9 @@ class RedisSTMBackend:
                 clean_key = key.split(":")[-1]  # Extract original key
                 result[clean_key] = entry["value"]
         return result
+
+    def clear(self, session_id: str):
+        pattern = f"stm:{session_id}:*"
+        keys = self.redis_client.keys(pattern)
+        if keys:
+            self.redis_client.delete(*keys)

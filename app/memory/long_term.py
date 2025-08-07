@@ -37,16 +37,6 @@ class LongTermMemory:
             model_name=embedding_model
         )
         vector_size = self.embedding_provider.dimension
-        """
-        # WITH this logic:
-        if embedding_provider == "openai":
-            self.embedding_provider = OpenAIEmbeddingProvider(model=embedding_model)
-            vector_size = self.embedding_provider.dimension
-        else:
-            self.embedding_provider = SentenceTransformerProvider(model_name=embedding_model)
-            vector_size = self.embedding_provider.dimension
-
-        """
 
         self._ensure_collection(vector_size)
 

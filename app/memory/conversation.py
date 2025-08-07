@@ -1,9 +1,13 @@
 # app/memory/conversation.py
+"""
+Conversation-aware memory management
+"""
+import json
 from typing import List, Optional, Dict
 from enum import Enum
 from pydantic import BaseModel
-import json
 from datetime import datetime
+from app.memory.scoring import score_importance
 
 
 class MessageRole(Enum):
@@ -31,43 +35,76 @@ class ConversationMemory:
         assistant_message: str,
         context: Optional[Dict] = None,
     ):
+        """Store a complete conversation turn"""
         # Store in STM for immediate context
         conversation_context = {
-            "last_user_message": user_message,
-            "last_assistant_message": assistant_message,
-            "turn_timestamp": datetime.utcnow().isoformat(),
+            "user_message": user_message,
+            "assistant_message": assistant_message,
+            "timestamp": datetime.utcnow().isoformat(),
+            "context": context or {},
         }
 
+        turn_key = f"conv_turn_{int(datetime.utcnow().timestamp())}"
         self.memory_manager.set_short_term(
-            session_id,
-            f"conversation_turn_{datetime.utcnow().timestamp()}",
-            json.dumps(conversation_context),
+            session_id, turn_key, json.dumps(conversation_context)
         )
 
-        # Determine if this turn is important enough for LTM
+        # Determine if this turn should go to LTM
         combined_turn = f"User: {user_message}\nAssistant: {assistant_message}"
-        importance = self.memory_manager.ltm.model.encode(
-            combined_turn
-        )  # Custom scoring
+        importance = score_importance(combined_turn)
 
-        if importance > 0.3:  # Configurable threshold
+        if importance > 0.2:  # Lower threshold for conversations
             self.memory_manager.add_long_term(
                 user_id=user_id,
                 text=combined_turn,
                 metadata={
                     "type": "conversation_turn",
                     "session_id": session_id,
+                    "importance": importance,
                     "context": context or {},
                 },
+                importance=importance,
             )
 
-    def get_conversation_context(self, session_id: str, last_n_turns: int = 5) -> str:
+    def get_conversation_context(
+        self, session_id: str, last_n_turns: int = 5
+    ) -> List[Dict]:
         """Get recent conversation context for AI model"""
         stm_data = self.memory_manager.get_all_short_term(session_id)
-        conversation_turns = [
-            v for k, v in stm_data.items() if k.startswith("conversation_turn_")
-        ]
+        conversation_turns = []
+
+        for key, value in stm_data.items():
+            if key.startswith("conv_turn_"):
+                try:
+                    turn_data = json.loads(value)
+                    conversation_turns.append(
+                        {
+                            "timestamp": turn_data["timestamp"],
+                            "user": turn_data["user_message"],
+                            "assistant": turn_data["assistant_message"],
+                            "context": turn_data.get("context", {}),
+                        }
+                    )
+                except json.JSONDecodeError:
+                    continue
 
         # Sort by timestamp and get last N
-        sorted_turns = sorted(conversation_turns, key=lambda x: x)[-last_n_turns:]
-        return "\n".join(sorted_turns)
+        conversation_turns.sort(key=lambda x: x["timestamp"])
+        return conversation_turns[-last_n_turns:]
+
+    def get_relevant_history(
+        self, user_id: str, current_query: str, top_k: int = 3
+    ) -> List[str]:
+        """Get relevant conversation history from LTM"""
+        relevant_memories = self.memory_manager.search_long_term(
+            query=current_query, user_id=user_id, top_k=top_k
+        )
+
+        # Filter for conversation turns
+        conversation_memories = [
+            memory.text
+            for memory in relevant_memories
+            if memory.metadata.get("type") == "conversation_turn"
+        ]
+
+        return conversation_memories
