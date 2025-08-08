@@ -5,7 +5,7 @@ from app.memory.long_term import LongTermMemory
 from app.memory.scoring import score_importance
 from app.memory.backends import InMemorySTMBackend, RedisSTMBackend
 from app.memory.schema import MemoryEntry
-from app.config import settings  # ✅ import config
+from app.config.settings import settings  # ✅ import config
 from datetime import datetime
 import threading
 import time

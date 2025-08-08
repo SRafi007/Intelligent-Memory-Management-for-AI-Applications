@@ -2,7 +2,7 @@
 from typing import Dict
 from app.memory.backends import STMBackend, InMemorySTMBackend, RedisSTMBackend
 from app.memory.schema import ShortTermMemoryEntry
-from app.config import settings
+from app.config.settings import settings
 
 
 class ShortTermMemory:

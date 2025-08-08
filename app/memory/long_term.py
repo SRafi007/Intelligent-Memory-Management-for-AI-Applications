@@ -11,7 +11,7 @@ from qdrant_client.http.models import (
 )
 from sentence_transformers import SentenceTransformer
 from app.memory.schema import LongTermMemoryEntry
-from app.config import settings  # ✅ import config
+from app.config.settings import settings  # ✅ import config
 from uuid import uuid4
 from typing import List, Optional, Dict, Any
 import logging
