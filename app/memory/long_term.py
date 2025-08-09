@@ -1,45 +1,69 @@
 # app/memory/long_term.py
 
-from qdrant_client import QdrantClient
-from qdrant_client.http.models import (
-    PointStruct,
-    VectorParams,
-    Distance,
-    Filter,
-    FieldCondition,
-    MatchValue,
-)
-from sentence_transformers import SentenceTransformer
-from app.memory.schema import LongTermMemoryEntry
-from app.config.settings import settings  # ✅ import config
-from uuid import uuid4
-from typing import List, Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import logging
+from app.memory.backends import QdrantLTMBackend, LTMBackend
+from app.memory.schema import LongTermMemoryEntry
+from app.config.settings import settings
+import json
+from pathlib import Path
+
+
+class LongTermMemory:
+    ...
+
+    def export_json(self, filepath: str):
+        """Export all LTM entries to JSON."""
+        # This assumes backend can return all stored entries
+        # For Qdrant, we need to scroll through points
+        all_entries = self.backend.export_all()
+        Path(filepath).write_text(
+            json.dumps([e.model_dump() for e in all_entries], default=str, indent=2)
+        )
+
+    def import_json(self, filepath: str):
+        """Import LTM entries from JSON."""
+        file_path = Path(filepath)
+        if not file_path.exists():
+            raise FileNotFoundError(filepath)
+        entries = json.loads(file_path.read_text())
+        for entry_dict in entries:
+            entry = LongTermMemoryEntry(**entry_dict)
+            self.backend.add_entry(
+                user_id=entry.user_id,
+                text=entry.text,
+                metadata=entry.metadata,
+                conversation_id=entry.metadata.get("conversation_id"),
+            )
+
 
 logger = logging.getLogger(__name__)
 
 
 class LongTermMemory:
+    """
+    A wrapper around an LTM backend (default: Qdrant) that adds:
+    - Deduplication before insertion
+    - Optional conversation-aware filtering
+    """
+
     def __init__(
         self,
+        backend: Optional[LTMBackend] = None,
         host: str = settings.LTM_QDRANT_HOST,
         port: int = settings.LTM_QDRANT_PORT,
         collection_name: str = settings.LTM_COLLECTION_NAME,
         embedding_model: str = settings.LTM_EMBEDDING_MODEL,
         vector_size: int = settings.LTM_VECTOR_SIZE,
     ):
-        self.collection_name = collection_name
-        self.client = QdrantClient(host=host, port=port)
-        self.model = SentenceTransformer(embedding_model)
-        self._ensure_collection(vector_size)
-
-    def _ensure_collection(self, vector_size: int):
-        if not self.client.collection_exists(self.collection_name):
-            logger.info(f"Creating Qdrant collection: {self.collection_name}")
-            self.client.recreate_collection(
-                collection_name=self.collection_name,
-                vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
-            )
+        # Use provided backend or default to Qdrant
+        self.backend = backend or QdrantLTMBackend(
+            host=host,
+            port=port,
+            collection_name=collection_name,
+            embedding_model=embedding_model,
+            vector_size=vector_size,
+        )
 
     def add_entry(
         self,
@@ -48,95 +72,38 @@ class LongTermMemory:
         metadata: Optional[Dict[str, Any]] = None,
         conversation_id: Optional[str] = None,
     ) -> Optional[str]:
-        #  deduplication with metadata consideration
+        # Deduplication
         search_filters = {"user_id": user_id}
         if conversation_id:
             search_filters["conversation_id"] = conversation_id
 
-        existing = self.search(query_text=text, top_k=3, filters=search_filters)
-
-        for e in existing:
-            # More sophisticated similarity check
+        existing_entries = self.search(query_text=text, top_k=3, filters=search_filters)
+        for e in existing_entries:
             if self._texts_similar(e.text, text, threshold=0.95):
                 logger.info(f"Similar entry found. Skipping: {text[:50]}...")
                 return None
 
-        # Add with conversation context
-        embedding = self.model.encode(text).tolist()
-        entry_id = str(uuid4())
-        metadata = metadata or {}
-        if conversation_id:
-            metadata["conversation_id"] = conversation_id
-
-        point = PointStruct(
-            id=entry_id,
-            vector=embedding,
-            payload={"user_id": user_id, "text": text, "metadata": metadata},
-        )
-
-        self.client.upsert(collection_name=self.collection_name, points=[point])
-        return entry_id
+        return self.backend.add_entry(user_id, text, metadata, conversation_id)
 
     def search(
         self,
         query_text: str,
         top_k: int = 5,
         filters: Optional[Dict[str, Any]] = None,
-        min_score: float = 0.3,
+        min_score: float = settings.MIN_SEARCH_SCORE,
     ) -> List[LongTermMemoryEntry]:
-        query_vector = self.model.encode(query_text).tolist()
-
-        # Build Qdrant filter
-        qdrant_filter = None
-        if filters:
-            conditions = []
-            for key, value in filters.items():
-                if key == "user_id":
-                    conditions.append(
-                        FieldCondition(key=key, match=MatchValue(value=value))
-                    )
-                else:
-                    conditions.append(
-                        FieldCondition(
-                            key=f"metadata.{key}", match=MatchValue(value=value)
-                        )
-                    )
-
-            if conditions:
-                qdrant_filter = Filter(must=conditions)
-
-        results = self.client.search(
-            collection_name=self.collection_name,
-            query_vector=query_vector,
-            limit=top_k,
-            query_filter=qdrant_filter,
-            score_threshold=min_score,
+        return self.backend.search(
+            query_text, top_k=top_k, filters=filters, min_score=min_score
         )
 
-        memory_entries = []
-        for result in results:
-            payload = result.payload
-            memory_entries.append(
-                LongTermMemoryEntry(
-                    id=str(result.id),
-                    user_id=payload["user_id"],
-                    text=payload["text"],
-                    metadata=payload.get("metadata", {}),
-                    embedding=result.vector,
-                )
-            )
-
-        return memory_entries
-
     def _texts_similar(self, text1: str, text2: str, threshold: float = 0.95) -> bool:
-        """Simple text similarity check"""
+        """Basic text similarity check using Jaccard similarity."""
         text1_clean = text1.strip().lower()
         text2_clean = text2.strip().lower()
 
         if text1_clean == text2_clean:
             return True
 
-        # Simple Jaccard similarity for words
         words1 = set(text1_clean.split())
         words2 = set(text2_clean.split())
 
@@ -145,16 +112,32 @@ class LongTermMemory:
 
         intersection = len(words1.intersection(words2))
         union = len(words1.union(words2))
-
         return intersection / union >= threshold
 
     def summarize_old_memories(self, user_id: str, days_old: int = 30) -> Optional[str]:
-        """Basic memory summarization to prevent growth"""
-        # This is a placeholder for more sophisticated summarization
-        # Could use LLM to summarize old conversations
-        from datetime import datetime, timedelta
-
-        cutoff_date = datetime.now() - timedelta(days=days_old)
-        # Implementation would filter by date and summarize
-        # For now, just return None
+        """Placeholder for summarizing old memories."""
         return None
+
+    def export_json(self, filepath: str):
+        """Export all LTM entries to JSON."""
+        # This assumes backend can return all stored entries
+        # For Qdrant, we need to scroll through points
+        all_entries = self.backend.export_all()
+        Path(filepath).write_text(
+            json.dumps([e.model_dump() for e in all_entries], default=str, indent=2)
+        )
+
+    def import_json(self, filepath: str):
+        """Import LTM entries from JSON."""
+        file_path = Path(filepath)
+        if not file_path.exists():
+            raise FileNotFoundError(filepath)
+        entries = json.loads(file_path.read_text())
+        for entry_dict in entries:
+            entry = LongTermMemoryEntry(**entry_dict)
+            self.backend.add_entry(
+                user_id=entry.user_id,
+                text=entry.text,
+                metadata=entry.metadata,
+                conversation_id=entry.metadata.get("conversation_id"),
+            )

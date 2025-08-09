@@ -1,12 +1,27 @@
 # app/memory/backends.py
 from abc import ABC, abstractmethod
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Any
 from datetime import datetime, timedelta
 import redis
-import json
-from app.memory.schema import ShortTermMemoryEntry
+from uuid import uuid4
+from sentence_transformers import SentenceTransformer
+from qdrant_client import QdrantClient
+from qdrant_client.http.models import (
+    PointStruct,
+    VectorParams,
+    Distance,
+    Filter,
+    FieldCondition,
+    MatchValue,
+)
+
+from app.memory.schema import ShortTermMemoryEntry, LongTermMemoryEntry
+from app.config.settings import settings
 
 
+# ======================
+# SHORT-TERM MEMORY BACKENDS
+# ======================
 class STMBackend(ABC):
     @abstractmethod
     def set(self, session_id: str, key: str, entry: ShortTermMemoryEntry):
@@ -51,8 +66,7 @@ class InMemorySTMBackend(STMBackend):
         }
 
     def clear(self, session_id: str):
-        if session_id in self._store:
-            del self._store[session_id]
+        self._store.pop(session_id, None)
 
     def cleanup_expired(self):
         expired_keys = []
@@ -82,9 +96,7 @@ class RedisSTMBackend(STMBackend):
         self.ttl_seconds = ttl_minutes * 60
 
     def _key(self, session_id: str, key: str = None) -> str:
-        if key:
-            return f"stm:{session_id}:{key}"
-        return f"stm:{session_id}:*"
+        return f"stm:{session_id}:{key}" if key else f"stm:{session_id}:*"
 
     def set(self, session_id: str, key: str, entry: ShortTermMemoryEntry):
         redis_key = self._key(session_id, key)
@@ -94,30 +106,155 @@ class RedisSTMBackend(STMBackend):
     def get(self, session_id: str, key: str) -> Optional[ShortTermMemoryEntry]:
         redis_key = self._key(session_id, key)
         data = self.redis_client.get(redis_key)
-        if data:
-            return ShortTermMemoryEntry.model_validate_json(data)
-        return None
+        return ShortTermMemoryEntry.model_validate_json(data) if data else None
 
     def get_all(self, session_id: str) -> Dict[str, ShortTermMemoryEntry]:
-        pattern = self._key(session_id).replace("*", "*")
-        keys = self.redis_client.keys(pattern)
+        keys = self.redis_client.keys(self._key(session_id))
         result = {}
-
         for redis_key in keys:
             data = self.redis_client.get(redis_key)
             if data:
                 entry = ShortTermMemoryEntry.model_validate_json(data)
                 key = redis_key.decode().split(":")[-1]
                 result[key] = entry
-
         return result
 
     def clear(self, session_id: str):
-        pattern = self._key(session_id).replace("*", "*")
-        keys = self.redis_client.keys(pattern)
+        keys = self.redis_client.keys(self._key(session_id))
         if keys:
             self.redis_client.delete(*keys)
 
     def cleanup_expired(self):
-        # Redis handles TTL automatically, so this is a no-op
+        pass  # Redis TTL handles this automatically
+
+
+# ======================
+# LONG-TERM MEMORY BACKENDS
+# ======================
+class LTMBackend(ABC):
+    @abstractmethod
+    def add_entry(
+        self,
+        user_id: str,
+        text: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        conversation_id: Optional[str] = None,
+    ) -> Optional[str]:
         pass
+
+    @abstractmethod
+    def search(
+        self,
+        query_text: str,
+        top_k: int = 5,
+        filters: Optional[Dict[str, Any]] = None,
+        min_score: float = 0.3,
+    ) -> List[LongTermMemoryEntry]:
+        pass
+
+
+class QdrantLTMBackend(LTMBackend):
+    def __init__(
+        self,
+        host: str = settings.LTM_QDRANT_HOST,
+        port: int = settings.LTM_QDRANT_PORT,
+        collection_name: str = settings.LTM_COLLECTION_NAME,
+        embedding_model: str = settings.LTM_EMBEDDING_MODEL,
+        vector_size: int = settings.LTM_VECTOR_SIZE,
+    ):
+        self.collection_name = collection_name
+        self.client = QdrantClient(host=host, port=port)
+        self.embedding_model_name = embedding_model
+        self.model = self._load_embedding_model()
+        self._ensure_collection(vector_size)
+
+    def _load_embedding_model(self):
+        """
+        Loads the embedding model from settings.
+        Later, we can expand this to support OpenAI, Cohere, etc.
+        """
+        try:
+            return SentenceTransformer(self.embedding_model_name)
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to load embedding model '{self.embedding_model_name}': {e}"
+            )
+
+    def _ensure_collection(self, vector_size: int):
+        if not self.client.collection_exists(self.collection_name):
+            self.client.recreate_collection(
+                collection_name=self.collection_name,
+                vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+            )
+
+    def add_entry(
+        self,
+        user_id: str,
+        text: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        conversation_id: Optional[str] = None,
+    ) -> Optional[str]:
+        embedding = self.model.encode(text).tolist()
+        entry_id = str(uuid4())
+        metadata = metadata or {}
+        if conversation_id:
+            metadata["conversation_id"] = conversation_id
+        point = PointStruct(
+            id=entry_id,
+            vector=embedding,
+            payload={"user_id": user_id, "text": text, "metadata": metadata},
+        )
+        self.client.upsert(collection_name=self.collection_name, points=[point])
+        return entry_id
+
+    def search(
+        self,
+        query_text: str,
+        top_k: int = 5,
+        filters: Optional[Dict[str, Any]] = None,
+        min_score: float = 0.3,
+    ) -> List[LongTermMemoryEntry]:
+        query_vector = self.model.encode(query_text).tolist()
+        qdrant_filter = None
+        if filters:
+            conditions = []
+            for key, value in filters.items():
+                field_key = key if key == "user_id" else f"metadata.{key}"
+                conditions.append(
+                    FieldCondition(key=field_key, match=MatchValue(value=value))
+                )
+            if conditions:
+                qdrant_filter = Filter(must=conditions)
+        results = self.client.search(
+            collection_name=self.collection_name,
+            query_vector=query_vector,
+            limit=top_k,
+            query_filter=qdrant_filter,
+            score_threshold=min_score,
+        )
+        return [
+            LongTermMemoryEntry(
+                id=str(res.id),
+                user_id=res.payload["user_id"],
+                text=res.payload["text"],
+                metadata=res.payload.get("metadata", {}),
+                embedding=res.vector,
+            )
+            for res in results
+        ]
+
+    def export_all(self) -> List[LongTermMemoryEntry]:
+        """Fetches all entries from Qdrant."""
+        results = self.client.scroll(
+            collection_name=self.collection_name, with_payload=True, with_vectors=True
+        )[0]
+        return [
+            LongTermMemoryEntry(
+                id=str(res.id),
+                user_id=res.payload["user_id"],
+                text=res.payload["text"],
+                metadata=res.payload.get("metadata", {}),
+                embedding=res.vector,
+            )
+            for res in results
+        ]

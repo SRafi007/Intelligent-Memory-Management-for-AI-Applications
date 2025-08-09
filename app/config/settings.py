@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     LTM_QDRANT_HOST: str = "localhost"
     LTM_QDRANT_PORT: int = 6333
     LTM_EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
+    # LTM_EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
+    # LTM_EMBEDDING_MODEL = "intfloat/multilingual-e5-base"
 
     # Short-Term Memory
     STM_TTL_MINUTES: int = 30
