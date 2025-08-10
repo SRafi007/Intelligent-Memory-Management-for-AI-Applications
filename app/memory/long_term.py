@@ -194,3 +194,76 @@ class LongTermMemory:
 
         logger.info(f"Summarized {len(old_entries)} memories into {summary_id}")
         return summary_id
+
+
+'''
+    def summarize_old_memories(self, user_id: str, days_old: int = settings.LTM_SUMMARIZATION_DAYS) -> Optional[str]:
+        """
+        Summarizes old memories using Gemini API, falls back to Ollama.
+        """
+        cutoff_date = datetime.now() - timedelta(days=days_old)
+        all_entries = self.backend.export_all()
+
+        old_entries = [e for e in all_entries if e.user_id == user_id and e.timestamp < cutoff_date]
+        if not old_entries:
+            logger.info("No old memories found for summarization.")
+            return None
+
+        combined_text = "\n".join([e.text for e in old_entries])
+
+        # Try Gemini first
+        summary_text = None
+        if settings.GEMINI_API_KEY:
+            try:
+                summary_text = self._summarize_with_gemini(combined_text)
+                logger.info("Summarization done with Gemini API.")
+            except Exception as e:
+                logger.warning(f"Gemini summarization failed: {e}")
+
+        # Fallback to Ollama
+        if not summary_text:
+            try:
+                summary_text = self._summarize_with_ollama(combined_text)
+                logger.info("Summarization done with Ollama fallback.")
+            except Exception as e:
+                logger.error(f"Ollama summarization failed: {e}")
+                return None
+
+        # Store summary in LTM
+        summary_id = self.add_entry(
+            user_id=user_id,
+            text=summary_text,
+            metadata={
+                "type": "summary",
+                "source_entries": [e.id for e in old_entries],
+                "generated_by": "gemini" if settings.GEMINI_API_KEY else "ollama"
+            },
+        )
+
+        # Optionally delete old memories
+        if settings.LTM_PRUNE_AFTER_SUMMARY:
+            self.backend.delete_entries([e.id for e in old_entries])
+
+        logger.info(f"Summarized {len(old_entries)} memories into {summary_id}")
+        return summary_id
+
+    def _summarize_with_gemini(self, text: str) -> str:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.GEMINI_MODEL}:generateContent?key={settings.GEMINI_API_KEY}"
+        payload = {"contents": [{"parts": [{"text": f"Summarize the following memories:\n{text}"}]}]}
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+        data = response.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+
+    def _summarize_with_ollama(self, text: str) -> str:
+        url = "http://localhost:11434/api/generate"
+        payload = {
+            "model": settings.OLLAMA_MODEL,
+            "prompt": f"Summarize the following memories:\n{text}",
+            "stream": False
+        }
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("response", "").strip()
+'''

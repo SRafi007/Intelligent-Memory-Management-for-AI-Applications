@@ -51,14 +51,6 @@ ai-memory-building-blocks/
 │       ├── short_term.py         # STM engine (in-memory with TTL)
 │       ├── long_term.py          # LTM engine (Qdrant-backed)
 │       └── memory_manager.py     # Unified interface for STM+LTM
-├── examples/
-│   ├── memory_demo.py            # Shows usage of STM + LTM
-│   ├── clear_ltm.py              # Delete Qdrant collection
-│   └── visualize_top_memories.py # Plot important memories
-├── scripts/
-│   ├── export_ltm.py             # Export LTM to JSON
-│   ├── import_ltm.py             # Import LTM from JSON
-│   └── view_ltm.py               # View all entries
 ├── tests/
 │   └── test_memory.py            # Unit tests for STM, LTM, promotion
 ├── requirements.txt
@@ -66,40 +58,6 @@ ai-memory-building-blocks/
 └── SETUP.md                      # Setup & integration guide
 ```
 
-## Quick Demo
-
-```bash
-# Run Qdrant
-docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
-
-# Run memory demo
-python examples/memory_demo.py
-
-# Visualize important memories
-python examples/visualize_top_memories.py
-
-# Run tests
-pytest tests/
-```
-
-## Integrating Into Your Project
-
-To plug this into your AI/LLM/Agent app:
-
-1. Copy:
-   * `app/memory/`
-   * `app/config/settings.py`
-2. Set up Qdrant (local or remote)
-3. Use:
-
-```python
-from app.memory.memory_manager import MemoryManager
-
-memory = MemoryManager()
-memory.set_short_term("session1", "intent", "book_flight")
-memory.promote_stm_to_ltm("session1", "user_123")
-results = memory.recall("user_123", "flight")
-```
 
 See full instructions in `SETUP.md`
 

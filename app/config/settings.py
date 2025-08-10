@@ -22,10 +22,13 @@ class Settings(BaseSettings):
     LTM_SUMMARIZATION_DAYS: int = 30  # Age threshold
     LTM_PRUNE_AFTER_SUMMARY: bool = True
     # Summarization & pruning
-    LTM_SUMMARIZATION_PROVIDER: str = "none"  # "openai" | "ollama" | "none"
-    LTM_SUMMARIZATION_MODEL: str = "gpt-4o-mini"  # provider-specific
     LTM_SUMMARIZATION_DAYS: int = 30
     LTM_PRUNE_AFTER_SUMMARY: bool = True
+
+    # AI model configs
+    GEMINI_API_KEY: str = ""  # Add in .env
+    GEMINI_MODEL: str = "gemini-2.5-flash"
+    OLLAMA_MODEL: str = "mistral"  # Local model name
 
     # Short-Term Memory
     STM_TTL_MINUTES: int = 30
