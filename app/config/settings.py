@@ -18,6 +18,14 @@ class Settings(BaseSettings):
     LTM_EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
     # LTM_EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
     # LTM_EMBEDDING_MODEL = "intfloat/multilingual-e5-base"
+    DEDUPLICATION_THRESHOLD: float = 0.92
+    LTM_SUMMARIZATION_DAYS: int = 30  # Age threshold
+    LTM_PRUNE_AFTER_SUMMARY: bool = True
+    # Summarization & pruning
+    LTM_SUMMARIZATION_PROVIDER: str = "none"  # "openai" | "ollama" | "none"
+    LTM_SUMMARIZATION_MODEL: str = "gpt-4o-mini"  # provider-specific
+    LTM_SUMMARIZATION_DAYS: int = 30
+    LTM_PRUNE_AFTER_SUMMARY: bool = True
 
     # Short-Term Memory
     STM_TTL_MINUTES: int = 30

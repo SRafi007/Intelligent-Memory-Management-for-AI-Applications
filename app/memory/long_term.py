@@ -7,6 +7,10 @@ from app.memory.schema import LongTermMemoryEntry
 from app.config.settings import settings
 import json
 from pathlib import Path
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+from datetime import datetime, timedelta
+import logging
 
 
 class LongTermMemory:
@@ -78,11 +82,23 @@ class LongTermMemory:
             search_filters["conversation_id"] = conversation_id
 
         existing_entries = self.search(query_text=text, top_k=3, filters=search_filters)
-        for e in existing_entries:
-            if self._texts_similar(e.text, text, threshold=0.95):
-                logger.info(f"Similar entry found. Skipping: {text[:50]}...")
-                return None
 
+        # New embedding
+        new_embedding = self.backend.model.encode(text).reshape(
+            1, -1
+        )  # 2D array for sklearn
+
+        for e in existing_entries:
+            if e.embedding is not None:
+                existing_vec = np.array(e.embedding).reshape(1, -1)
+                sim = cosine_similarity(new_embedding, existing_vec)[0][0]
+                if sim >= settings.DEDUPLICATION_THRESHOLD:
+                    logger.info(
+                        f"Similar entry found (cosine sim={sim:.3f}). Skipping: {text[:50]}..."
+                    )
+                    return None
+
+        # If no near-duplicate found, store
         return self.backend.add_entry(user_id, text, metadata, conversation_id)
 
     def search(
@@ -141,3 +157,40 @@ class LongTermMemory:
                 metadata=entry.metadata,
                 conversation_id=entry.metadata.get("conversation_id"),
             )
+
+    def summarize_old_memories(
+        self, user_id: str, days_old: int = settings.LTM_SUMMARIZATION_DAYS
+    ) -> Optional[str]:
+        """
+        Summarizes old memories older than `days_old`.
+        Uses a placeholder for LLM summarization - can be replaced with OpenAI/Ollama.
+        """
+        cutoff_date = datetime.now() - timedelta(days=days_old)
+        all_entries = self.backend.export_all()
+
+        old_entries = [
+            e for e in all_entries if e.user_id == user_id and e.timestamp < cutoff_date
+        ]
+        if not old_entries:
+            logger.info("No old memories found for summarization.")
+            return None
+
+        # Placeholder summarization logic
+        combined_text = "\n".join([e.text for e in old_entries])
+        summary_text = (
+            f"Summary of {len(old_entries)} old memories:\n{combined_text[:500]}..."
+        )
+
+        # Store summary in LTM
+        summary_id = self.add_entry(
+            user_id=user_id,
+            text=summary_text,
+            metadata={"type": "summary", "source_entries": [e.id for e in old_entries]},
+        )
+
+        # Optionally delete old memories
+        if settings.LTM_PRUNE_AFTER_SUMMARY:
+            self.backend.delete_entries([e.id for e in old_entries])
+
+        logger.info(f"Summarized {len(old_entries)} memories into {summary_id}")
+        return summary_id

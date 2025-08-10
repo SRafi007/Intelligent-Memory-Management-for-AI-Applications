@@ -306,6 +306,11 @@ class QdrantLTMBackend(LTMBackend):
             for res in results
         ]
 
+    def delete_entries(self, ids: List[str]):
+        self.client.delete(
+            collection_name=self.collection_name, points_selector={"points": ids}
+        )
+
 
 # ---------------- Async version of the qdrant backend
 

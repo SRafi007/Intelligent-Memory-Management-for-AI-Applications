@@ -21,8 +21,11 @@ class MemoryManager:
         embedding_model: str = settings.LTM_EMBEDDING_MODEL,
         enable_cleanup: bool = settings.ENABLE_CLEANUP,
         cleanup_interval_minutes: int = settings.CLEANUP_INTERVAL_MINUTES,
+        # 🔹 New optional hooks
+        on_memory_add=None,
+        on_memory_recall=None,
+        on_stm_promote=None,
     ):
-        # Initialize STM backend
         if stm_backend == "redis":
             backend = RedisSTMBackend(redis_url, stm_ttl_minutes)
         else:
@@ -37,7 +40,11 @@ class MemoryManager:
             vector_size=settings.LTM_VECTOR_SIZE,
         )
 
-        # Start cleanup thread if enabled
+        # Store hooks
+        self.on_memory_add = on_memory_add
+        self.on_memory_recall = on_memory_recall
+        self.on_stm_promote = on_stm_promote
+
         if enable_cleanup:
             self._start_cleanup_thread(cleanup_interval_minutes)
 
@@ -56,6 +63,10 @@ class MemoryManager:
     # STM methods (same interface as before)
     def set_short_term(self, session_id: str, key: str, value: str):
         self.stm.set(session_id, key, value)
+        if callable(self.on_memory_add):
+            self.on_memory_add(
+                "short_term", {"session_id": session_id, "key": key, "value": value}
+            )
 
     def get_short_term(self, session_id: str, key: str) -> str:
         return self.stm.get(session_id, key)
@@ -67,6 +78,7 @@ class MemoryManager:
         self.stm.clear(session_id)
 
     #  LTM methods
+
     def add_long_term(
         self,
         user_id: str,
@@ -81,12 +93,14 @@ class MemoryManager:
             importance = score_importance(text, context)
         metadata["importance"] = importance
 
-        return self.ltm.add_entry(
-            user_id=user_id,
-            text=text,
-            metadata=metadata,
-            conversation_id=conversation_id,
-        )
+        result = self.ltm.add_entry(user_id, text, metadata, conversation_id)
+
+        if callable(self.on_memory_add) and result:
+            self.on_memory_add(
+                "long_term", {"user_id": user_id, "text": text, "metadata": metadata}
+            )
+
+        return result
 
     def search_long_term(
         self,
@@ -145,7 +159,12 @@ class MemoryManager:
                         )
                     )
             if len(stm_entries) >= top_k:
-                return stm_entries[:top_k]
+                results = stm_entries[:top_k]
+                if callable(self.on_memory_recall):
+                    self.on_memory_recall(
+                        {"user_id": user_id, "query": query, "results": results}
+                    )
+                return results
 
         # Search LTM with conversation context
         search_filters = {}
@@ -160,7 +179,15 @@ class MemoryManager:
         combined = stm_entries + [
             e for e in ltm_entries if e.text not in {x.text for x in stm_entries}
         ]
-        return combined[:top_k]
+        results = combined[:top_k]
+
+        # 🔹 Hook call here
+        if callable(self.on_memory_recall):
+            self.on_memory_recall(
+                {"user_id": user_id, "query": query, "results": results}
+            )
+
+        return results
 
     def promote_stm_to_ltm(
         self,
@@ -187,6 +214,11 @@ class MemoryManager:
                 context=context,
             )
             self.clear_short_term(session_id)
+
+            # 🔹 Hook call here
+            if callable(self.on_stm_promote) and ltm_id:
+                self.on_stm_promote({"session_id": session_id, "ltm_id": ltm_id})
+
             return ltm_id
 
         return None
