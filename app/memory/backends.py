@@ -17,6 +17,9 @@ from qdrant_client.http.models import (
 
 from app.memory.schema import ShortTermMemoryEntry, LongTermMemoryEntry
 from app.config.settings import settings
+import aioredis
+import asyncio
+from qdrant_client.grpc import AsyncQdrantClient
 
 
 # ======================
@@ -126,6 +129,50 @@ class RedisSTMBackend(STMBackend):
 
     def cleanup_expired(self):
         pass  # Redis TTL handles this automatically
+
+
+# ---------------- Async version of the Redisstmbackend
+class AsyncRedisSTMBackend(STMBackend):
+    def __init__(
+        self, redis_url: str = "redis://localhost:6379", ttl_minutes: int = 30
+    ):
+        self.redis_url = redis_url
+        self.ttl_seconds = ttl_minutes * 60
+        self.redis_client = None  # Will be set in async init
+
+    async def init(self):
+        self.redis_client = await aioredis.from_url(self.redis_url)
+
+    async def set(self, session_id: str, key: str, entry: ShortTermMemoryEntry):
+        redis_key = f"stm:{session_id}:{key}"
+        await self.redis_client.setex(
+            redis_key, self.ttl_seconds, entry.model_dump_json()
+        )
+
+    async def get(self, session_id: str, key: str) -> Optional[ShortTermMemoryEntry]:
+        redis_key = f"stm:{session_id}:{key}"
+        data = await self.redis_client.get(redis_key)
+        return ShortTermMemoryEntry.model_validate_json(data) if data else None
+
+    async def get_all(self, session_id: str) -> Dict[str, ShortTermMemoryEntry]:
+        pattern = f"stm:{session_id}:*"
+        keys = await self.redis_client.keys(pattern)
+        result = {}
+        for redis_key in keys:
+            data = await self.redis_client.get(redis_key)
+            if data:
+                entry = ShortTermMemoryEntry.model_validate_json(data)
+                key = redis_key.decode().split(":")[-1]
+                result[key] = entry
+        return result
+
+    async def clear(self, session_id: str):
+        keys = await self.redis_client.keys(f"stm:{session_id}:*")
+        if keys:
+            await self.redis_client.delete(*keys)
+
+    async def cleanup_expired(self):
+        pass  # Redis handles TTL automatically
 
 
 # ======================
@@ -248,6 +295,89 @@ class QdrantLTMBackend(LTMBackend):
         results = self.client.scroll(
             collection_name=self.collection_name, with_payload=True, with_vectors=True
         )[0]
+        return [
+            LongTermMemoryEntry(
+                id=str(res.id),
+                user_id=res.payload["user_id"],
+                text=res.payload["text"],
+                metadata=res.payload.get("metadata", {}),
+                embedding=res.vector,
+            )
+            for res in results
+        ]
+
+
+# ---------------- Async version of the qdrant backend
+
+
+class AsyncQdrantLTMBackend(LTMBackend):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        collection_name: str,
+        embedding_model: str,
+        vector_size: int,
+    ):
+        self.collection_name = collection_name
+        self.client = AsyncQdrantClient(host=host, port=port)
+        self.embedding_model_name = embedding_model
+        self.model = SentenceTransformer(self.embedding_model_name)
+        asyncio.create_task(self._ensure_collection(vector_size))
+
+    async def _ensure_collection(self, vector_size: int):
+        collections = await self.client.get_collections()
+        if self.collection_name not in [c.name for c in collections.collections]:
+            await self.client.recreate_collection(
+                collection_name=self.collection_name,
+                vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+            )
+
+    async def add_entry(
+        self,
+        user_id: str,
+        text: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        conversation_id: Optional[str] = None,
+    ) -> Optional[str]:
+        embedding = self.model.encode(text).tolist()
+        entry_id = str(uuid4())
+        metadata = metadata or {}
+        if conversation_id:
+            metadata["conversation_id"] = conversation_id
+        point = PointStruct(
+            id=entry_id,
+            vector=embedding,
+            payload={"user_id": user_id, "text": text, "metadata": metadata},
+        )
+        await self.client.upsert(collection_name=self.collection_name, points=[point])
+        return entry_id
+
+    async def search(
+        self,
+        query_text: str,
+        top_k: int = 5,
+        filters: Optional[Dict[str, Any]] = None,
+        min_score: float = 0.3,
+    ) -> List[LongTermMemoryEntry]:
+        query_vector = self.model.encode(query_text).tolist()
+        qdrant_filter = None
+        if filters:
+            conditions = []
+            for key, value in filters.items():
+                field_key = key if key == "user_id" else f"metadata.{key}"
+                conditions.append(
+                    FieldCondition(key=field_key, match=MatchValue(value=value))
+                )
+            if conditions:
+                qdrant_filter = Filter(must=conditions)
+        results = await self.client.search(
+            collection_name=self.collection_name,
+            query_vector=query_vector,
+            limit=top_k,
+            query_filter=qdrant_filter,
+            score_threshold=min_score,
+        )
         return [
             LongTermMemoryEntry(
                 id=str(res.id),
