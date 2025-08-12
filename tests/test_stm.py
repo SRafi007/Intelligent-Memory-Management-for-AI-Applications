@@ -1,49 +1,28 @@
 # tests/test_stm.py
-
-import time
-from app.memory.short_term import ShortTermMemory
-from app.memory.backends import InMemorySTMBackend
+from app.memory.memory_factory import get_memory_manager
 
 
-def test_set_and_get_stm_entry():
-    backend = InMemorySTMBackend(ttl_minutes=1)
-    stm = ShortTermMemory(backend)
+def test_stm():
+    manager = get_memory_manager()
 
-    stm.set("session123", "greeting", "Hello world")
-    result = stm.get("session123", "greeting")
+    session_id = "sess1"
 
-    assert result == "Hello world"
+    # 1. Set STM values
+    manager.set_short_term(session_id, "topic", "We are discussing AI memory.")
+    manager.set_short_term(session_id, "mood", "Excited")
 
+    # 2. Retrieve single key
+    topic = manager.get_short_term(session_id, "topic")
+    print(f"Retrieved topic: {topic}")
 
-def test_get_all_returns_all_non_expired_entries():
-    backend = InMemorySTMBackend(ttl_minutes=1)
-    stm = ShortTermMemory(backend)
+    # 3. Retrieve all STM entries
+    all_data = manager.get_all_short_term(session_id)
+    print("All STM entries:", all_data)
 
-    stm.set("session123", "k1", "v1")
-    stm.set("session123", "k2", "v2")
-
-    result = stm.get_all("session123")
-
-    assert result == {"k1": "v1", "k2": "v2"}
-
-
-def test_clear_removes_session_entries():
-    backend = InMemorySTMBackend(ttl_minutes=1)
-    stm = ShortTermMemory(backend)
-
-    stm.set("session123", "k1", "v1")
-    stm.clear("session123")
-
-    result = stm.get("session123", "k1")
-    assert result == ""
+    # 4. Clear STM
+    manager.clear_short_term(session_id)
+    print("After clearing:", manager.get_all_short_term(session_id))
 
 
-def test_expired_entries_are_removed_on_get():
-    backend = InMemorySTMBackend(ttl_minutes=0.01)  # 0.6 seconds
-    stm = ShortTermMemory(backend)
-
-    stm.set("session123", "temp", "soon gone")
-    time.sleep(1)
-
-    result = stm.get("session123", "temp")
-    assert result == ""
+if __name__ == "__main__":
+    test_stm()

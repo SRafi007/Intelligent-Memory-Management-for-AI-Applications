@@ -17,9 +17,9 @@ from qdrant_client.http.models import (
 
 from app.memory.schema import ShortTermMemoryEntry, LongTermMemoryEntry
 from app.config.settings import settings
-import aioredis
+from redis import asyncio as aioredis
 import asyncio
-from qdrant_client.grpc import AsyncQdrantClient
+from qdrant_client import AsyncQdrantClient
 
 
 # ======================
