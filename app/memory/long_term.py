@@ -1,7 +1,7 @@
 # app/memory/long_term.py
 
 from typing import Optional, Dict, Any, List
-import logging
+from utils.logger import logger
 from app.memory.backends import QdrantLTMBackend, LTMBackend
 from app.memory.schema import LongTermMemoryEntry
 from app.config.settings import settings
@@ -10,7 +10,6 @@ from pathlib import Path
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 from datetime import datetime, timedelta
-import logging
 
 
 class LongTermMemory:
@@ -39,9 +38,6 @@ class LongTermMemory:
                 metadata=entry.metadata,
                 conversation_id=entry.metadata.get("conversation_id"),
             )
-
-
-logger = logging.getLogger(__name__)
 
 
 class LongTermMemory:

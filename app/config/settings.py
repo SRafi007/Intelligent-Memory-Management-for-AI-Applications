@@ -32,6 +32,10 @@ class Settings(BaseSettings):
 
     # Short-Term Memory
     STM_TTL_MINUTES: int = 30
+    # STM Persistence Settings
+    STM_PERSISTENCE_MODE: str = "aof"  # options: "aof", "rdb", "none"
+    STM_RDB_SAVE_INTERVAL: int = 60  # seconds, only applies if "rdb"
+    STM_RDB_SAVE_CHANGES: int = 1  # number of changes before saving
 
     # Cleanup
     ENABLE_CLEANUP: bool = True
